@@ -17,6 +17,7 @@
 
 # version used for php embedded library soname
 %global embed_version 7.1
+%global ius_suffix 71u
 
 %global mysql_sock %(mysql_config --socket 2>/dev/null || echo /var/lib/mysql/mysql.sock)
 
@@ -37,8 +38,19 @@
 %global isasuffix %nil
 %endif
 
+
+# needed at srpm build time, when httpd-devel not yet installed
 # needed at srpm build time, when httpd-devel not yet installed
 %{!?_httpd_mmn:        %{expand: %%global _httpd_mmn        %%(cat %{_includedir}/httpd/.mmn 2>/dev/null || echo 0-0)}}
+# /usr/sbin/apsx with httpd < 2.4 and defined as /usr/bin/apxs with httpd >= 2.4
+%{!?_httpd_apxs:       %{expand: %%global _httpd_apxs       %%{_bindir}/apxs}}
+%{!?_httpd_confdir:    %{expand: %%global _httpd_confdir    %%{_sysconfdir}/httpd/conf.d}}
+# /etc/httpd/conf.d with httpd < 2.4 and defined as /etc/httpd/conf.modules.d with httpd >= 2.4
+%{!?_httpd_modconfdir: %{expand: %%global _httpd_modconfdir %%{_sysconfdir}/httpd/conf.d}}
+%{!?_httpd_moddir:     %{expand: %%global _httpd_moddir     %%{_libdir}/httpd/modules}}
+%{!?_httpd_contentdir: %{expand: %%global _httpd_contentdir /var/www}}
+
+
 
 %global with_dtrace 1
 
@@ -47,6 +59,16 @@
 %global  with_libgd 0
 %else
 %global  with_libgd 1
+%endif
+
+%if 0%{?rhel} >= 7
+%global with_systemd 1
+%global with_libpcre 1
+%global _macrosdir %{_rpmconfigdir}/macros.d
+%else
+%global with_systemd 0
+%global with_libpcre 0
+%global _macrosdir %{_sysconfdir}/rpm
 %endif
 
 %global with_zip     0
@@ -65,7 +87,7 @@
 %global rpmrel 1
 
 Summary: PHP scripting language for creating dynamic web sites
-Name: php
+Name: php%{?ius_suffix}
 Version: 7.1.0
 %if 0%{?rcver:1}
 Release: 0.%{rpmrel}.%{rcver}%{?dist}
@@ -91,6 +113,8 @@ Source9: php.modconf
 Source10: php.ztsmodconf
 Source13: nginx-fpm.conf
 Source14: nginx-php.conf
+Source15: httpd-fpm.conf
+Source20: php-fpm.init
 # Configuration files for some extensions
 Source50: 10-opcache.ini
 Source51: opcache-default.blacklist
@@ -133,7 +157,9 @@ BuildRequires: nginx-filesystem
 BuildRequires: libstdc++-devel, openssl-devel
 BuildRequires: sqlite-devel >= 3.6.0
 BuildRequires: zlib-devel, smtpdaemon, libedit-devel
+%if %{with_libpcre}
 BuildRequires: pcre-devel >= 6.6
+%endif
 BuildRequires: bzip2, perl, libtool >= 1.4.3, gcc-c++
 BuildRequires: libtool-ltdl-devel
 %if %{with_libzip}
@@ -170,6 +196,37 @@ use of PHP coding is probably as a replacement for CGI scripts.
 The php package contains the module (often referred to as mod_php)
 which adds support for the PHP language to Apache HTTP Server.
 
+%package -n mod_php%{?ius_suffix}
+Group: Development/Languages
+Summary: PHP module for the Apache HTTP Server
+BuildRequires: httpd-devel >= 2.4.10
+Requires: httpd-mmn = %{_httpd_mmn}
+Requires: php-common%{?_isa} = %{version}-%{release}
+# for user experience
+Provides: %{name} = %{version}-%{release}
+Provides: %{name}%{?_isa} = %{version}-%{release}
+%if %{with_zts}
+Provides: php-zts = %{version}-%{release}
+Provides: php-zts%{?_isa} = %{version}-%{release}
+Provides: %{name}-zts = %{version}-%{release}
+Provides: %{name}-zts%{?_isa} = %{version}-%{release}
+%endif
+
+# php engine for Apache httpd webserver
+Provides: php(httpd)
+Provides: %{name}(httpd)
+
+Provides: php = %{version}-%{release}
+Provides: php%{?_isa} = %{version}-%{release}
+Conflicts: php < %{base_ver}
+Provides: mod_php = %{version}-%{release}
+Provides: mod_php%{?_isa} = %{version}-%{release}
+Conflicts: mod_php < %{base_ver}
+
+%description -n mod_php%{?ius_suffix}
+The mod_php package contains the module which adds support for the PHP
+language to Apache HTTP Server.
+
 %package cli
 Group: Development/Languages
 Summary: Command-line interface for PHP
@@ -202,26 +259,54 @@ License: PHP and Zend and BSD
 BuildRequires: libacl-devel
 Requires: php-common%{?_isa} = %{version}-%{release}
 Requires(pre): /usr/sbin/useradd
+%if %{with_systemd}
 BuildRequires: systemd-units
 BuildRequires: systemd-devel
 Requires: systemd-units
 Requires(post): systemd-units
 Requires(preun): systemd-units
 Requires(postun): systemd-units
+%else
+Requires(post): chkconfig
+Requires(preun): chkconfig
+Requires(preun): initscripts
+Requires(postun): initscripts
+%endif
 # To ensure correct /var/lib/php/session ownership:
 Requires(pre): httpd-filesystem
 # For php.conf in /etc/httpd/conf.d
-# and version 2.4.10 for proxy support in SetHandler
-Requires: httpd-filesystem >= 2.4.10
 # php engine for Apache httpd webserver
 Provides: php(httpd)
-# for /etc/nginx ownership
-Requires: nginx-filesystem
 
 %description fpm
 PHP-FPM (FastCGI Process Manager) is an alternative PHP FastCGI
 implementation with some additional features useful for sites of
 any size, especially busier sites.
+
+%package fpm-nginx
+Group: Development/Languages
+Summary: Nginx configuration for PHP-FPM
+BuildArch: noarch
+Requires: php-fpm = %{version}-%{release}
+Requires: nginx
+Provides: php-fpm-nginx = %{version}-%{release}
+Conflicts: php-fpm-nginx < %{base_ver}
+
+%description fpm-nginx
+Nginx configuration files for the PHP FastCGI Process Manager.
+
+%package fpm-httpd
+Group: Development/Languages
+Summary: Apache HTTP Server configuration for PHP-FPM
+BuildArch: noarch
+Requires: php-fpm = %{version}-%{release}
+Requires: httpd >= 2.4.10
+Provides: php-fpm-httpd = %{version}-%{release}
+Conflicts: php-fpm-httpd < %{base_ver}
+
+%description fpm-httpd
+Apache HTTP Server configuration file for the PHP FastCGI Process Manager.
+
 
 %package common
 Group: Development/Languages
@@ -276,7 +361,9 @@ package and the php-cli package.
 Group: Development/Libraries
 Summary: Files needed for building PHP extensions
 Requires: php-cli%{?_isa} = %{version}-%{release}, autoconf, automake
+%if %{with_libpcre}
 Requires: pcre-devel%{?_isa}
+%endif
 Obsoletes: php-pecl-json-devel  < %{jsonver}
 Obsoletes: php-pecl-jsonc-devel < %{jsonver}
 %if %{with_zts}
@@ -820,8 +907,10 @@ rm -f TSRM/tsrm_win32.h \
 find . -name \*.[ch] -exec chmod 644 {} \;
 chmod 644 README.*
 
+%if %{with_systemd}
 # php-fpm configuration files for tmpfiles.d
 echo "d /run/php-fpm 755 root root" >php-fpm.tmpfiles
+%endif
 
 # Some extensions have their own configuration file
 cp %{SOURCE50} 10-opcache.ini
@@ -888,7 +977,9 @@ ln -sf ../configure
     --with-jpeg-dir=%{_prefix} \
     --with-openssl \
     --with-system-ciphers \
+%if %{with_libpcre}
     --with-pcre-regex=%{_prefix} \
+%endif
     --with-zlib \
     --with-layout=GNU \
     --with-kerberos \
@@ -1013,7 +1104,9 @@ popd
 pushd build-fpm
 build --enable-fpm \
       --with-fpm-acl \
+%if %{with_systemd}
       --with-fpm-systemd \
+%endif
       --libdir=%{_libdir}/php \
       --without-mysqli \
       --disable-pdo \
@@ -1219,10 +1312,14 @@ install -m 755 -d $RPM_BUILD_ROOT%{_localstatedir}/log/php-fpm
 install -m 755 -d $RPM_BUILD_ROOT/run/php-fpm
 # Config
 install -m 755 -d $RPM_BUILD_ROOT%{_sysconfdir}/php-fpm.d
+%if ! %{with_systemd}
 install -m 644 %{SOURCE4} $RPM_BUILD_ROOT%{_sysconfdir}/php-fpm.conf
 install -m 644 %{SOURCE5} $RPM_BUILD_ROOT%{_sysconfdir}/php-fpm.d/www.conf
+%endif
 mv $RPM_BUILD_ROOT%{_sysconfdir}/php-fpm.conf.default .
 mv $RPM_BUILD_ROOT%{_sysconfdir}/php-fpm.d/www.conf.default .
+%if %{with_systemd}
+install -m 755 -d $RPM_BUILD_ROOT/run/php-fpm
 # tmpfiles.d
 install -m 755 -d $RPM_BUILD_ROOT%{_prefix}/lib/tmpfiles.d
 install -m 644 php-fpm.tmpfiles $RPM_BUILD_ROOT%{_prefix}/lib/tmpfiles.d/php-fpm.conf
@@ -1230,12 +1327,23 @@ install -m 644 php-fpm.tmpfiles $RPM_BUILD_ROOT%{_prefix}/lib/tmpfiles.d/php-fpm
 install -m 755 -d $RPM_BUILD_ROOT%{_sysconfdir}/systemd/system/php-fpm.service.d
 install -m 755 -d $RPM_BUILD_ROOT%{_unitdir}
 install -m 644 %{SOURCE6} $RPM_BUILD_ROOT%{_unitdir}/
+%else
+install -m 755 -d $RPM_BUILD_ROOT%{_localstatedir}/run/php-fpm
+install -m 755 -d $RPM_BUILD_ROOT%{_initrddir}
+install -m 755 %{SOURCE20} $RPM_BUILD_ROOT%{_initrddir}/php-fpm
+%endif
 # LogRotate
 install -m 755 -d $RPM_BUILD_ROOT%{_sysconfdir}/logrotate.d
 install -m 644 %{SOURCE7} $RPM_BUILD_ROOT%{_sysconfdir}/logrotate.d/php-fpm
 # Nginx configuration
 install -D -m 644 %{SOURCE13} $RPM_BUILD_ROOT%{_sysconfdir}/nginx/conf.d/php-fpm.conf
 install -D -m 644 %{SOURCE14} $RPM_BUILD_ROOT%{_sysconfdir}/nginx/default.d/php.conf
+# Apache httpd configuration
+install -D -m 644 %{SOURCE15} $RPM_BUILD_ROOT%{_httpd_confdir}/php-fpm.conf
+%if ! %{with_systemd}
+sed -i -e 's:/run:%{_localstatedir}/run:' $RPM_BUILD_ROOT%{_sysconfdir}/nginx/conf.d/php-fpm.conf
+sed -i -e 's:/run:%{_localstatedir}/run:' $RPM_BUILD_ROOT%{_httpd_confdir}/php-fpm.conf
+%endif
 
 # Generate files lists and stub .ini files for each subpackage
 for mod in pgsql odbc ldap snmp xmlrpc imap json \
@@ -1354,19 +1462,44 @@ rm -rf $RPM_BUILD_ROOT%{_libdir}/php/modules/*.a \
 rm -f README.{Zeus,QNX,CVS-RULES}
 
 
+%pre fpm
+getent group php-fpm >/dev/null || \
+  groupadd -r php-fpm
+getent passwd php-fpm >/dev/null || \
+  useradd -r -g php-fpm -s /sbin/nologin \
+    -d %{_sharedstatedir}/php/fpm -c "php-fpm" php-fpm
+exit 0
+
 %post fpm
+%if %{with_systemd}
 %systemd_post php-fpm.service
+%else
+chkconfig --add php-fpm
+%endif
 
 %preun fpm
+%if %{with_systemd}
 %systemd_preun php-fpm.service
+%else
+if [ "$1" -eq 0 ]; then
+service php-fpm stop &> /dev/null
+chkconfig --del php-fpm
+fi
+%endif
 
 %postun fpm
+%if %{with_systemd}
 %systemd_postun_with_restart php-fpm.service
+%else
+if [ "$1" -ge 1 ]; then
+service php-fpm condrestart &> /dev/null || :
+fi
+%endif
 
 %post embedded -p /sbin/ldconfig
 %postun embedded -p /sbin/ldconfig
 
-%files
+%files -n mod_php%{?ius_suffix}
 %{_httpd_moddir}/libphp7.so
 %if %{with_zts}
 %{_httpd_moddir}/libphp7-zts.so
@@ -1433,23 +1566,32 @@ rm -f README.{Zeus,QNX,CVS-RULES}
 %attr(0770,root,apache) %dir %{_sharedstatedir}/php/session
 %attr(0770,root,apache) %dir %{_sharedstatedir}/php/wsdlcache
 %attr(0770,root,apache) %dir %{_sharedstatedir}/php/opcache
-%config(noreplace) %{_httpd_confdir}/php.conf
 %config(noreplace) %{_sysconfdir}/php-fpm.conf
 %config(noreplace) %{_sysconfdir}/php-fpm.d/www.conf
 %config(noreplace) %{_sysconfdir}/logrotate.d/php-fpm
-%config(noreplace) %{_sysconfdir}/nginx/conf.d/php-fpm.conf
-%config(noreplace) %{_sysconfdir}/nginx/default.d/php.conf
+%if %{with_systemd}
 %{_prefix}/lib/tmpfiles.d/php-fpm.conf
 %{_unitdir}/php-fpm.service
-%{_sbindir}/php-fpm
+%dir /run/php-fpm
 %dir %{_sysconfdir}/systemd/system/php-fpm.service.d
+%else
+%dir %{_localstatedir}/run/php-fpm
+%{_initrddir}/php-fpm
+%endif
+%{_sbindir}/php-fpm
 %dir %{_sysconfdir}/php-fpm.d
 # log owned by apache for log
 %attr(770,apache,root) %dir %{_localstatedir}/log/php-fpm
-%dir /run/php-fpm
 %{_mandir}/man8/php-fpm.8*
 %dir %{_datadir}/fpm
 %{_datadir}/fpm/status.html
+
+%files fpm-nginx
+%config(noreplace) %{_sysconfdir}/nginx/conf.d/php-fpm.conf
+%config(noreplace) %{_sysconfdir}/nginx/default.d/php.conf
+
+%files fpm-httpd
+%config(noreplace) %{_httpd_confdir}/php-fpm.conf
 
 %files devel
 %{_bindir}/php-config
@@ -1511,6 +1653,9 @@ rm -f README.{Zeus,QNX,CVS-RULES}
 
 
 %changelog
+* Sun Dec  4 2016 Gregory Boddin <gregory@siwhine.net> 7.1.0-1.ius
+- Ported changes from ius php70u to php71u specs and source files
+
 * Thu Dec  1 2016 Remi Collet <remi@fedoraproject.org> 7.1.0-1
 - Update to 7.1.0 - http://www.php.net/releases/7_1_0.php
 
